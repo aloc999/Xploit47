@@ -102,7 +102,7 @@ export class Reasoner {
   }
 
   public async clear(): Promise<void> {
-    await this.stateManager.clear();
+    this.stateManager.clear();
     // Clear all strategies
     for (const strategy of this.strategies.values()) {
       await strategy.clear();

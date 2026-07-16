@@ -45,16 +45,29 @@ class AttackStepLogger {
       ? chalk.red("🔥 Critical Path")
       : chalk.blue("🛡️  Attack Step");
     const header = `${prefix} ${attackStepNumber}/${totalAttackSteps}`;
-    const border = "─".repeat(
-      Math.max(header.length, attackStep.length, 40) + 4
+    const assetLine = `Target Asset: ${asset || "N/A"}`;
+    const toolLine = `Recommended Tool: ${recommendedTool || "N/A"}`;
+    // Visible width ignores ANSI codes for border sizing
+    const strip = (s: string) => s.replace(/\u001b\[[0-9;]*m/g, "");
+    const width = Math.max(
+      strip(header).length,
+      attackStep.length,
+      assetLine.length,
+      toolLine.length,
+      40
     );
+    const pad = (s: string) => {
+      const visible = strip(s).length;
+      return s + " ".repeat(Math.max(0, width - visible));
+    };
+    const border = "─".repeat(width + 2);
     return (
       `\n┌${border}┐\n` +
-      `│ ${header.padEnd(border.length - 2)} │\n` +
+      `│ ${pad(header)} │\n` +
       `├${border}┤\n` +
-      `│ ${attackStep.padEnd(border.length - 2)} │\n` +
-      `│ Target Asset: ${(asset || "N/A").padEnd(Math.max(0, border.length - 16))}│\n` +
-      `│ Recommended Tool: ${(recommendedTool || "N/A").padEnd(Math.max(0, border.length - 21))}│\n` +
+      `│ ${pad(attackStep)} │\n` +
+      `│ ${pad(assetLine)} │\n` +
+      `│ ${pad(toolLine)} │\n` +
       `└${border}┘`
     );
   }
@@ -70,28 +83,45 @@ class AttackStepLogger {
 }
 
 function processInput(input: any) {
+  if (input == null || typeof input !== "object") {
+    throw new Error("arguments must be an object");
+  }
+
   const result = {
-    attackStep: String(input.attackStep || ""),
-    attackStepNumber: Number(input.attackStepNumber || 0),
-    totalAttackSteps: Number(input.totalAttackSteps || 0),
+    attackStep: String(input.attackStep ?? "").trim(),
+    attackStepNumber: Number(input.attackStepNumber),
+    totalAttackSteps: Number(input.totalAttackSteps),
     nextAttackStepNeeded: Boolean(input.nextAttackStepNeeded),
     strategyType: input.strategyType as ReasoningStrategy | undefined,
-    asset: input.asset ? String(input.asset) : undefined,
-    recommendedTool: input.recommendedTool
-      ? String(input.recommendedTool)
-      : undefined,
+    asset: input.asset != null && input.asset !== "" ? String(input.asset) : undefined,
+    recommendedTool:
+      input.recommendedTool != null && input.recommendedTool !== ""
+        ? String(input.recommendedTool)
+        : undefined,
     critical: Boolean(input.critical),
   };
 
   if (!result.attackStep) {
     throw new Error("attackStep must be provided");
   }
-  if (result.attackStepNumber < 1) {
-    throw new Error("attackStepNumber must be >= 1");
+  if (!Number.isFinite(result.attackStepNumber) || result.attackStepNumber < 1) {
+    throw new Error("attackStepNumber must be an integer >= 1");
   }
-  if (result.totalAttackSteps < 1) {
-    throw new Error("totalAttackSteps must be >= 1");
+  if (!Number.isFinite(result.totalAttackSteps) || result.totalAttackSteps < 1) {
+    throw new Error("totalAttackSteps must be an integer >= 1");
   }
+  if (
+    result.strategyType !== undefined &&
+    !Object.values(ReasoningStrategy).includes(result.strategyType)
+  ) {
+    throw new Error(
+      `strategyType must be one of: ${Object.values(ReasoningStrategy).join(", ")}`
+    );
+  }
+
+  // Coerce to integers for clean stats
+  result.attackStepNumber = Math.floor(result.attackStepNumber);
+  result.totalAttackSteps = Math.floor(result.totalAttackSteps);
 
   return result;
 }
