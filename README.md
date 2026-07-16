@@ -4,8 +4,6 @@
 
 Features **Beam Search**, **Monte Carlo Tree Search (MCTS)**, attack step scoring, tool recommendations, and critical-path highlighting.
 
-> Inspired by / based on [PentestThinkingMCP](https://github.com/ibrahimsaleem/PentestThinkingMCP) (MIT). Rebranded and packaged as **Xploit47** for [aloc999](https://github.com/aloc999).
-
 ---
 
 ## What is Xploit47?
@@ -149,5 +147,3 @@ Xploit47/
 ## License
 
 MIT — see [LICENSE](./LICENSE).
-
-Based on [PentestThinkingMCP](https://github.com/ibrahimsaleem/PentestThinkingMCP) (MIT).
