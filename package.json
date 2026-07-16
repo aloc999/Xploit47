@@ -1,0 +1,56 @@
+{
+  "name": "xploit47",
+  "version": "1.0.0",
+  "description": "Xploit47 — systematic AI-powered penetration testing reasoning MCP server. Attack path planning with Beam Search and MCTS for CTF/HTB and authorized pentest workflows.",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "xploit47": "dist/index.js"
+  },
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "clean": "shx rm -rf dist",
+    "prebuild": "npm run clean",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "chalk": "^5.3.0",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/uuid": "^10.0.0",
+    "shx": "^0.3.4",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  },
+  "keywords": [
+    "mcp",
+    "xploit47",
+    "pentest",
+    "reasoning",
+    "beam-search",
+    "monte-carlo-tree-search",
+    "ctf",
+    "htb",
+    "attack-path",
+    "ai"
+  ],
+  "author": "aloc999",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aloc999/Xploit47.git"
+  },
+  "bugs": {
+    "url": "https://github.com/aloc999/Xploit47/issues"
+  },
+  "homepage": "https://github.com/aloc999/Xploit47#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
