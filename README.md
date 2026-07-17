@@ -14,9 +14,13 @@ Xploit47 is a **Model Context Protocol (MCP)** server that turns an LLM into a s
 |---|---|
 | Beam Search | Fixed-width exploration of the most promising attack paths |
 | MCTS | Simulation-based exploration for uncertain / complex scenarios |
-| Step scoring | Likelihood, impact heuristics, chain coherence |
-| Tool hints | Suggests tools (nmap, enum4linux, searchsploit, etc.) via your client |
-| Critical path | Highlights highest-value steps in the chain |
+| Deterministic scoring | Same input → same score; explainable breakdown (no randomness) |
+| Kill-chain phase | Auto-classifies recon → enum → vuln → exploit → privesc → post-ex |
+| Tool recommendation | Auto-suggests tools (nmap, enum4linux, searchsploit, …) with confidence |
+| Asset extraction | Pulls IP/hostname from step text when not provided |
+| Path chaining | Auto-links sequential steps; returns full path + pathScore |
+| Critical path | Auto-flags high-impact steps (CVE exploit, privesc, …) |
+| Next-step hints | Phase-aware planning suggestions |
 | MCP-native | Works with Claude Desktop, Cursor, Grok, and other MCP clients |
 
 ---
@@ -85,9 +89,10 @@ npm start
 | `totalAttackSteps` | integer ≥ 1 | yes | Estimated total steps |
 | `nextAttackStepNeeded` | boolean | yes | Whether another step is needed |
 | `strategyType` | `"beam_search"` \| `"mcts"` | no | Search strategy (default: beam_search) |
-| `asset` | string | no | Target asset label |
-| `recommendedTool` | string | no | Suggested tool for this step |
-| `critical` | boolean | no | Mark as critical path |
+| `asset` | string | no | Target asset (auto-extracted if omitted) |
+| `recommendedTool` | string | no | Tool (auto-recommended if omitted) |
+| `critical` | boolean | no | Critical flag (auto-detected if omitted) |
+| `parentId` | string | no | Explicit parent node (auto-links sequential steps) |
 
 ---
 
@@ -127,15 +132,18 @@ npm start        # node dist/index.js
 Xploit47/
 ├── src/
 │   ├── index.ts              # MCP server entry (stdio)
-│   ├── reasoner.ts           # Strategy orchestration
+│   ├── reasoner.ts           # Strategy orchestration + auto parent links
+│   ├── scoring.ts            # Deterministic score + kill-chain phase
+│   ├── recommend.ts          # Tool / asset inference + next-step hints
 │   ├── engine.ts             # Lightweight beam engine
 │   ├── state.ts              # Node cache / path state
 │   ├── types.ts              # Shared types & config
 │   └── strategies/
-│       ├── base.ts           # Shared scoring
+│       ├── base.ts           # Shared evaluation + response builder
 │       ├── beam-search.ts    # Beam Search
 │       ├── mcts.ts           # Monte Carlo Tree Search
 │       └── factory.ts        # Strategy factory
+├── scripts/smoke-test.mjs    # Accuracy + MCP integration tests
 ├── tot-engine.js             # Standalone Tree-of-Thought helper
 ├── state-manager.js          # Standalone session helper
 ├── package.json

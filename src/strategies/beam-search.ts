@@ -1,7 +1,15 @@
-import { v4 as uuidv4 } from 'uuid';
-import { AttackNode, ReasoningRequest, ReasoningResponse, CONFIG } from '../types.js';
-import { BaseStrategy } from './base.js';
-import { StateManager } from '../state.js';
+import { v4 as uuidv4 } from "uuid";
+import {
+  AttackNode,
+  ReasoningRequest,
+  ReasoningResponse,
+  CONFIG,
+} from "../types.js";
+import { BaseStrategy } from "./base.js";
+import { StateManager } from "../state.js";
+import { extractAsset } from "../recommend.js";
+import { isCriticalStep } from "../scoring.js";
+import { recommendTool } from "../recommend.js";
 
 export class BeamSearchStrategy extends BaseStrategy {
   private beams: Map<number, AttackNode[]>;
@@ -13,11 +21,10 @@ export class BeamSearchStrategy extends BaseStrategy {
     this.beamWidth = CONFIG.beamWidth;
   }
 
-  public async processAttackStep(request: ReasoningRequest): Promise<ReasoningResponse> {
-    // Create new node with unique id
-    const parent = request.parentId
-      ? await this.stateManager.getNode(request.parentId)
-      : undefined;
+  public async processAttackStep(
+    request: ReasoningRequest
+  ): Promise<ReasoningResponse> {
+    const parent = await this.resolveParent(request);
 
     const node: AttackNode = {
       id: uuidv4(),
@@ -25,75 +32,85 @@ export class BeamSearchStrategy extends BaseStrategy {
       depth: request.attackStepNumber - 1,
       score: 0,
       isComplete: !request.nextAttackStepNeeded,
+      isSimulation: false,
       parent,
+      parentId: parent?.id,
+      attackStepNumber: request.attackStepNumber,
+      totalAttackSteps: request.totalAttackSteps,
+      children: [],
     };
 
-    // Score and save node
-    node.score = this.evaluateAttackStep(node, parent);
+    const { score, breakdown, phase } = this.evaluateAttackStep(
+      node,
+      parent,
+      request
+    );
+    node.score = score;
+    node.scoreBreakdown = breakdown;
+    node.phase = phase;
+    node.asset = extractAsset(request.attackStep, request.asset);
+    const rec = recommendTool(
+      request.attackStep,
+      request.recommendedTool,
+      phase
+    );
+    node.recommendedTool = rec.recommendedTool;
+    node.critical =
+      request.critical === true ? true : isCriticalStep(phase, breakdown);
+
     await this.saveNode(node);
-    await this.stateManager.saveNode(node);
 
     if (parent) {
       if (!parent.children) parent.children = [];
-      parent.children.push(node);
-      await this.stateManager.saveNode(parent);
+      // Avoid duplicate child links
+      if (!parent.children.some((c) => c.id === node.id)) {
+        parent.children.push(node);
+      }
+      await this.saveNode(parent);
     }
 
-    // Get or create beam for this depth
+    // Beam: keep top-k user nodes at this depth
     let beam = this.beams.get(node.depth) || [];
+    beam = beam.filter((n) => !n.isSimulation);
     beam.push(node);
-
-    // Keep only top k nodes in beam
+    beam.sort((a, b) => (b.score || 0) - (a.score || 0));
     if (beam.length > this.beamWidth) {
-      beam = beam
-        .sort((a, b) => (b.score || 0) - (a.score || 0))
-        .slice(0, this.beamWidth);
+      beam = beam.slice(0, this.beamWidth);
     }
-
     this.beams.set(node.depth, beam);
 
-    return {
-      nodeId: node.id,
-      attackStep: node.attackStep,
-      score: node.score || 0,
-      strategyUsed: 'beam_search',
-      nextAttackStepNeeded: request.nextAttackStepNeeded,
-    };
+    const path = await this.getPathFrom(node);
+    return this.buildResponse(node, request, "beam_search", path);
   }
 
   public async getBestPath(): Promise<AttackNode[]> {
     const depths = Array.from(this.beams.keys()).sort((a, b) => b - a);
-    if (depths.length === 0) return [];
+    if (depths.length === 0) return super.getBestPath();
 
-    const lastBeam = this.beams.get(depths[0]) || [];
-    if (lastBeam.length === 0) return [];
+    for (const depth of depths) {
+      const beam = (this.beams.get(depth) || []).filter((n) => !n.isSimulation);
+      if (beam.length === 0) continue;
 
-    // Get highest scoring complete path
-    const bestNode = lastBeam
-      .filter(n => n.isComplete)
-      .sort((a, b) => (b.score || 0) - (a.score || 0))[0];
-
-    if (!bestNode) return [];
-
-    // Reconstruct path
-    const path: AttackNode[] = [bestNode];
-    let current = bestNode;
-
-    while (current.parent) {
-      path.unshift(current.parent);
-      current = current.parent;
+      const complete = beam
+        .filter((n) => n.isComplete)
+        .sort((a, b) => (b.score || 0) - (a.score || 0));
+      const best = complete[0] ?? beam[0];
+      if (best) return this.getPathFrom(best);
     }
 
-    return path;
+    return super.getBestPath();
   }
 
   public async getMetrics(): Promise<any> {
     const baseMetrics = await super.getMetrics();
+    const beamNodes = Array.from(this.beams.values())
+      .flat()
+      .filter((n) => !n.isSimulation);
     return {
       ...baseMetrics,
       beamWidth: this.beamWidth,
       activeBeams: this.beams.size,
-      totalBeamNodes: Array.from(this.beams.values()).flat().length
+      totalBeamNodes: beamNodes.length,
     };
   }
 

@@ -1,6 +1,7 @@
 /**
  * Xploit47 Tree-of-Thought engine (standalone helper)
  * Beam-search style expansion for attack-path planning.
+ * Scoring is deterministic (no Math.random).
  */
 export class ToTEngine {
   constructor() {
@@ -8,15 +9,17 @@ export class ToTEngine {
     this.maxDepth = 3;
   }
 
-  // Pentest-specific scoring: prioritize high-value assets and high-severity vulns
+  // Deterministic pentest scoring (mirrors src/scoring.ts intent)
   async evaluateAttackStep(attackStep) {
-    // Example: prioritize steps mentioning 'domain controller', 'database', or 'CVE'
-    let score = 0.5;
-    if (/domain controller|database/i.test(attackStep.description)) score += 0.3;
-    if (/CVE-\d{4}-\d{4,7}/i.test(attackStep.description)) score += 0.2;
-    if (/critical|high/i.test(attackStep.description)) score += 0.2;
-    // Add randomness for diversity
-    score += Math.random() * 0.2;
+    const desc = attackStep.description || "";
+    let score = 0.12;
+    if (/\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b/.test(desc)) score += 0.08;
+    if (/domain controller|database/i.test(desc)) score += 0.15;
+    if (/CVE-\d{4}-\d{4,7}/i.test(desc)) score += 0.1;
+    if (/critical|high/i.test(desc)) score += 0.1;
+    if (/\b(nmap|enum|exploit|privesc)\b/i.test(desc)) score += 0.1;
+    // tiny stable hash jitter replacement: length-based, deterministic
+    score += Math.min(desc.length / 500, 0.05);
     return Math.min(score, 1.0);
   }
 

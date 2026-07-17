@@ -1,5 +1,22 @@
-import { AttackNode, ReasoningRequest, ReasoningResponse } from '../types.js';
-import { StateManager } from '../state.js';
+import {
+  AttackNode,
+  ReasoningRequest,
+  ReasoningResponse,
+} from "../types.js";
+import { StateManager } from "../state.js";
+import {
+  classifyPhase,
+  isCriticalStep,
+  scoreAttackStep,
+  scorePath,
+  type KillChainPhase,
+  type ScoreBreakdown,
+} from "../scoring.js";
+import {
+  extractAsset,
+  nextStepHints,
+  recommendTool,
+} from "../recommend.js";
 
 export interface StrategyMetrics {
   name: string;
@@ -13,14 +30,15 @@ export interface StrategyMetrics {
 export abstract class BaseStrategy {
   protected stateManager: StateManager;
   protected nodes: Map<string, AttackNode> = new Map();
-  protected readonly minScore = 0.5;
 
   constructor(stateManager: StateManager) {
     this.stateManager = stateManager;
     this.nodes = new Map();
   }
 
-  abstract processAttackStep(request: ReasoningRequest): Promise<ReasoningResponse>;
+  abstract processAttackStep(
+    request: ReasoningRequest
+  ): Promise<ReasoningResponse>;
 
   protected async getNode(id: string): Promise<AttackNode | undefined> {
     return this.nodes.get(id) ?? this.stateManager.getNode(id);
@@ -28,92 +46,132 @@ export abstract class BaseStrategy {
 
   protected async saveNode(node: AttackNode): Promise<void> {
     this.nodes.set(node.id, node);
+    await this.stateManager.saveNode(node);
   }
 
-  protected evaluateAttackStep(node: AttackNode, parent?: AttackNode): number {
-    let score = this.minScore;
-
-    score += this.calculateLogicalScore(node);
-    score += this.calculatePentestScore(node);
-    score -= this.calculateDepthPenalty(node);
-
-    if (parent) {
-      score += this.calculateCoherence(parent.attackStep, node.attackStep);
-    }
-
-    return Math.min(Math.max(score, 0), 1);
+  /**
+   * Deterministic evaluation using shared scoring module.
+   * Replaces heuristic length/random scoring.
+   */
+  protected evaluateAttackStep(
+    node: AttackNode,
+    parent?: AttackNode,
+    request?: ReasoningRequest
+  ): { score: number; breakdown: ScoreBreakdown; phase: KillChainPhase } {
+    const result = scoreAttackStep({
+      attackStep: node.attackStep,
+      attackStepNumber:
+        request?.attackStepNumber ?? (node.depth || 0) + 1,
+      totalAttackSteps:
+        request?.totalAttackSteps ?? Math.max((node.depth || 0) + 1, 1),
+      parentAttackStep: parent?.attackStep,
+      parentPhase: parent?.phase,
+    });
+    return result;
   }
 
-  private calculateLogicalScore(node: AttackNode): number {
-    let score = 0;
-
-    // Length score (up to 0.2) — favor detailed steps
-    score += Math.min(node.attackStep.length / 250, 0.2);
-
-    // Logical connectors
-    if (/\b(therefore|because|if|then|thus|hence|so|after|then)\b/i.test(node.attackStep)) {
-      score += 0.1;
-    }
-
-    // Technical content / operators
-    if (/[+\-*/=<>]|port\s*\d+|0x[0-9a-f]+/i.test(node.attackStep)) {
-      score += 0.1;
-    }
-
-    return score;
-  }
-
-  /** Pentest-oriented heuristics (aligned with ToT engine intent) */
-  private calculatePentestScore(node: AttackNode): number {
-    let score = 0;
-    const text = node.attackStep;
-
-    if (/domain controller|active directory|kerberos|ntlm/i.test(text)) score += 0.15;
-    if (/database|sql|mongodb|redis/i.test(text)) score += 0.1;
-    if (/CVE-\d{4}-\d{4,7}/i.test(text)) score += 0.15;
-    if (/\b(critical|high severity|rce|remote code)\b/i.test(text)) score += 0.1;
-    if (/\b(nmap|enum4linux|smb|ssh|http|https|ldap|rdp)\b/i.test(text)) score += 0.1;
-    if (/\b(privesc|privilege escalation|linpeas|winpeas|sudo)\b/i.test(text)) score += 0.1;
-    if (/\b(exploit|payload|shell|reverse shell)\b/i.test(text)) score += 0.05;
-
-    return Math.min(score, 0.4);
-  }
-
-  private calculateDepthPenalty(node: AttackNode): number {
-    return Math.min((node.depth || 0) * 0.05, 0.25);
-  }
-
-  private calculateCoherence(parentAttackStep: string, childAttackStep: string): number {
-    const parentTerms = new Set(
-      parentAttackStep.toLowerCase().split(/\W+/).filter((t) => t.length > 2)
+  protected buildResponse(
+    node: AttackNode,
+    request: ReasoningRequest,
+    strategyUsed: string,
+    path: AttackNode[]
+  ): ReasoningResponse {
+    const phase = node.phase ?? classifyPhase(node.attackStep);
+    const asset = node.asset ?? extractAsset(request.attackStep, request.asset);
+    const rec = recommendTool(
+      request.attackStep,
+      request.recommendedTool ?? node.recommendedTool,
+      phase
     );
-    const childTerms = childAttackStep
-      .toLowerCase()
-      .split(/\W+/)
-      .filter((t) => t.length > 2);
-    if (parentTerms.size === 0 || childTerms.length === 0) return 0;
-    const overlap = childTerms.filter((term) => parentTerms.has(term)).length;
-    return Math.min(overlap * 0.05, 0.2);
+    const breakdown =
+      node.scoreBreakdown ??
+      scoreAttackStep({
+        attackStep: node.attackStep,
+        attackStepNumber: request.attackStepNumber,
+        totalAttackSteps: request.totalAttackSteps,
+      }).breakdown;
+
+    const critical =
+      request.critical === true
+        ? true
+        : node.critical ?? isCriticalStep(phase, breakdown);
+
+    const pathScores = path.map((n) => n.score ?? 0);
+    const userPath = path.filter((n) => !n.isSimulation);
+
+    return {
+      nodeId: node.id,
+      attackStep: node.attackStep,
+      score: node.score ?? breakdown.total,
+      strategyUsed,
+      nextAttackStepNeeded: request.nextAttackStepNeeded,
+      phase,
+      asset,
+      recommendedTool: rec.recommendedTool,
+      toolConfidence: rec.confidence,
+      toolAlternatives: rec.alternatives,
+      toolRationale: rec.rationale,
+      critical,
+      scoreBreakdown: breakdown,
+      parentId: node.parentId ?? node.parent?.id,
+      path: userPath.map((n) => ({
+        nodeId: n.id,
+        attackStep: n.attackStep,
+        score: n.score ?? 0,
+        phase: n.phase,
+      })),
+      pathScore: scorePath(pathScores.length ? pathScores : [node.score ?? 0]),
+      nextStepHints: nextStepHints(phase, asset),
+    };
+  }
+
+  protected async resolveParent(
+    request: ReasoningRequest
+  ): Promise<AttackNode | undefined> {
+    if (!request.parentId) return undefined;
+    return this.getNode(request.parentId);
+  }
+
+  protected async getPathFrom(node: AttackNode): Promise<AttackNode[]> {
+    const path: AttackNode[] = [];
+    let current: AttackNode | undefined = node;
+    const seen = new Set<string>();
+
+    while (current && !seen.has(current.id)) {
+      seen.add(current.id);
+      path.unshift(current);
+      if (current.parentId) {
+        current = await this.getNode(current.parentId);
+      } else if (current.parent) {
+        current = current.parent;
+      } else {
+        break;
+      }
+    }
+    return path;
   }
 
   public async getBestPath(): Promise<AttackNode[]> {
-    const nodes = await this.stateManager.getAllNodes();
+    const nodes = (await this.stateManager.getAllNodes()).filter(
+      (n) => !n.isSimulation
+    );
     if (nodes.length === 0) return [];
 
-    const completedNodes = nodes
+    const completed = nodes
       .filter((n) => n.isComplete)
       .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
 
-    if (completedNodes.length === 0) {
-      const best = [...nodes].sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
-      return best ? this.stateManager.getPath(best.id) : [];
-    }
+    const target =
+      completed[0] ??
+      [...nodes].sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
 
-    return this.stateManager.getPath(completedNodes[0].id);
+    return this.getPathFrom(target);
   }
 
   public async getMetrics(): Promise<StrategyMetrics> {
-    const nodes = await this.stateManager.getAllNodes();
+    const nodes = (await this.stateManager.getAllNodes()).filter(
+      (n) => !n.isSimulation
+    );
 
     return {
       name: this.constructor.name,

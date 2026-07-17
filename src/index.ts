@@ -18,10 +18,9 @@ import { Reasoner } from "./reasoner.js";
 import { ReasoningStrategy } from "./types.js";
 
 const SERVER_NAME = "Xploit47";
-const SERVER_VERSION = "1.0.0";
+const SERVER_VERSION = "1.1.0";
 const TOOL_NAME = "xploit47";
 
-/** Simple step logger (mirrors original index.js UX) */
 class AttackStepLogger {
   private attackSteps: any[] = [];
 
@@ -32,6 +31,8 @@ class AttackStepLogger {
     asset?: string;
     recommendedTool?: string;
     critical?: boolean;
+    score?: number;
+    phase?: string;
   }): string {
     const {
       attackStepNumber,
@@ -40,6 +41,8 @@ class AttackStepLogger {
       asset,
       recommendedTool,
       critical,
+      score,
+      phase,
     } = data;
     const prefix = critical
       ? chalk.red("🔥 Critical Path")
@@ -47,13 +50,14 @@ class AttackStepLogger {
     const header = `${prefix} ${attackStepNumber}/${totalAttackSteps}`;
     const assetLine = `Target Asset: ${asset || "N/A"}`;
     const toolLine = `Recommended Tool: ${recommendedTool || "N/A"}`;
-    // Visible width ignores ANSI codes for border sizing
+    const metaLine = `Score: ${score != null ? score.toFixed(4) : "N/A"} | Phase: ${phase || "N/A"}`;
     const strip = (s: string) => s.replace(/\u001b\[[0-9;]*m/g, "");
     const width = Math.max(
       strip(header).length,
       attackStep.length,
       assetLine.length,
       toolLine.length,
+      metaLine.length,
       40
     );
     const pad = (s: string) => {
@@ -68,6 +72,7 @@ class AttackStepLogger {
       `│ ${pad(attackStep)} │\n` +
       `│ ${pad(assetLine)} │\n` +
       `│ ${pad(toolLine)} │\n` +
+      `│ ${pad(metaLine)} │\n` +
       `└${border}┘`
     );
   }
@@ -93,12 +98,20 @@ function processInput(input: any) {
     totalAttackSteps: Number(input.totalAttackSteps),
     nextAttackStepNeeded: Boolean(input.nextAttackStepNeeded),
     strategyType: input.strategyType as ReasoningStrategy | undefined,
-    asset: input.asset != null && input.asset !== "" ? String(input.asset) : undefined,
+    asset:
+      input.asset != null && input.asset !== ""
+        ? String(input.asset).trim()
+        : undefined,
     recommendedTool:
       input.recommendedTool != null && input.recommendedTool !== ""
-        ? String(input.recommendedTool)
+        ? String(input.recommendedTool).trim()
         : undefined,
-    critical: Boolean(input.critical),
+    critical:
+      input.critical === undefined ? undefined : Boolean(input.critical),
+    parentId:
+      input.parentId != null && input.parentId !== ""
+        ? String(input.parentId).trim()
+        : undefined,
   };
 
   if (!result.attackStep) {
@@ -107,7 +120,10 @@ function processInput(input: any) {
   if (!Number.isFinite(result.attackStepNumber) || result.attackStepNumber < 1) {
     throw new Error("attackStepNumber must be an integer >= 1");
   }
-  if (!Number.isFinite(result.totalAttackSteps) || result.totalAttackSteps < 1) {
+  if (
+    !Number.isFinite(result.totalAttackSteps) ||
+    result.totalAttackSteps < 1
+  ) {
     throw new Error("totalAttackSteps must be an integer >= 1");
   }
   if (
@@ -119,7 +135,6 @@ function processInput(input: any) {
     );
   }
 
-  // Coerce to integers for clean stats
   result.attackStepNumber = Math.floor(result.attackStepNumber);
   result.totalAttackSteps = Math.floor(result.totalAttackSteps);
 
@@ -147,7 +162,7 @@ function createServer() {
       {
         name: TOOL_NAME,
         description:
-          "Xploit47 advanced pentest reasoning engine. Breaks down attack paths step by step using Beam Search or Monte Carlo Tree Search (MCTS). Scores steps, tracks attack chains, and returns strategy metrics. Use for CTF/HTB planning and authorized pentest workflows.",
+          "Xploit47 accurate pentest reasoning engine. Scores and chains attack steps with deterministic Beam Search or MCTS. Returns explainable score breakdown, kill-chain phase, auto tool recommendation, asset extraction, critical-path flag, full path, and next-step hints. For authorized CTF/HTB and professional pentest planning only.",
         inputSchema: {
           type: "object",
           properties: {
@@ -174,19 +189,27 @@ function createServer() {
               type: "string",
               enum: Object.values(ReasoningStrategy),
               description:
-                "Attack strategy to use: beam_search (methodical) or mcts (exploratory)",
+                "Attack strategy: beam_search (methodical) or mcts (exploratory)",
             },
             asset: {
               type: "string",
-              description: "Target asset for this step (optional)",
+              description:
+                "Target asset (optional; auto-extracted from step when omitted)",
             },
             recommendedTool: {
               type: "string",
-              description: "Recommended tool for this step (optional)",
+              description:
+                "Tool for this step (optional; auto-recommended when omitted)",
             },
             critical: {
               type: "boolean",
-              description: "Whether this step is on the critical path",
+              description:
+                "Force critical-path flag (optional; auto-detected when omitted)",
+            },
+            parentId: {
+              type: "string",
+              description:
+                "Parent node id for explicit chaining (optional; auto-links sequential steps)",
             },
           },
           required: [
@@ -220,36 +243,60 @@ function createServer() {
         step.totalAttackSteps = step.attackStepNumber;
       }
 
-      logger.log(step);
-
       const response = await reasoner.processAttackStep({
         attackStep: step.attackStep,
         attackStepNumber: step.attackStepNumber,
         totalAttackSteps: step.totalAttackSteps,
         nextAttackStepNeeded: step.nextAttackStepNeeded,
         strategyType: step.strategyType,
+        asset: step.asset,
+        recommendedTool: step.recommendedTool,
+        critical: step.critical,
+        parentId: step.parentId,
+      });
+
+      logger.log({
+        ...step,
+        asset: response.asset ?? step.asset,
+        recommendedTool: response.recommendedTool,
+        critical: response.critical,
+        score: response.score,
+        phase: response.phase,
       });
 
       const stats = await reasoner.getStats();
 
       const result = {
         server: SERVER_NAME,
+        version: SERVER_VERSION,
+        success: true,
         attackStepNumber: step.attackStepNumber,
         totalAttackSteps: step.totalAttackSteps,
         nextAttackStepNeeded: step.nextAttackStepNeeded,
         attackStep: step.attackStep,
-        asset: step.asset,
-        recommendedTool: step.recommendedTool,
-        critical: step.critical || false,
+        asset: response.asset,
+        recommendedTool: response.recommendedTool,
+        toolConfidence: response.toolConfidence,
+        toolAlternatives: response.toolAlternatives,
+        toolRationale: response.toolRationale,
+        critical: response.critical,
+        phase: response.phase,
         nodeId: response.nodeId,
+        parentId: response.parentId,
         score: response.score,
+        scoreBreakdown: response.scoreBreakdown,
         strategyUsed: response.strategyUsed,
+        path: response.path,
+        pathScore: response.pathScore,
+        nextStepHints: response.nextStepHints,
         attackStepCount: logger.count(),
         stats: {
           totalNodes: stats.totalNodes,
+          userNodes: stats.userNodes,
           averageScore: stats.averageScore,
           maxDepth: stats.maxDepth,
           branchingFactor: stats.branchingFactor,
+          bestPathScore: stats.bestPathScore,
           strategyMetrics: stats.strategyMetrics,
         },
       };
@@ -292,12 +339,11 @@ async function runServer() {
   await server.connect(transport);
   console.error(
     chalk.green(
-      `Xploit47 MCP Server v${SERVER_VERSION} running on stdio (Beam Search + MCTS)`
+      `Xploit47 MCP Server v${SERVER_VERSION} running on stdio (accurate Beam Search + MCTS)`
     )
   );
 }
 
-// Run when executed directly (stdio MCP mode)
 const isDirectRun =
   !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 
