@@ -7,6 +7,7 @@
  */
 
 import { pathToFileURL } from "node:url";
+import { spawn } from "node:child_process";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -18,8 +19,9 @@ import { Reasoner } from "./reasoner.js";
 import { ReasoningStrategy } from "./types.js";
 
 const SERVER_NAME = "Xploit47";
-const SERVER_VERSION = "1.1.0";
+const SERVER_VERSION = "1.2.0";
 const TOOL_NAME = "xploit47";
+const EXEC_TOOL_NAME = "xploit47_exec";
 
 class AttackStepLogger {
   private attackSteps: any[] = [];
@@ -141,6 +143,105 @@ function processInput(input: any) {
   return result;
 }
 
+function errorResult(message: string) {
+  return {
+    content: [
+      { type: "text", text: JSON.stringify({ error: message, success: false }) },
+    ],
+    isError: true,
+  };
+}
+
+const MAX_STREAM_BYTES = 5 * 1024 * 1024;
+
+function truncate(s: string, max = 200000): string {
+  if (s.length <= max) return s;
+  return s.slice(0, max) + `\n...[truncated ${s.length - max} chars]`;
+}
+
+async function handleExec(args: any) {
+  const command = String(args?.command ?? "").trim();
+  const authorized = args?.authorized === true;
+  const timeout =
+    Number.isFinite(Number(args?.timeout)) && Number(args.timeout) > 0
+      ? Math.min(Number(args.timeout), 1800)
+      : 120;
+  const cwd = args?.cwd ? String(args.cwd) : undefined;
+  const extraEnv =
+    args?.env && typeof args.env === "object" ? args.env : {};
+
+  if (!command) {
+    return errorResult("command must be provided");
+  }
+  if (!authorized) {
+    return errorResult(
+      "authorized must be true — confirm written authorization for this target"
+    );
+  }
+
+  const startedAt = Date.now();
+  try {
+    const { stdout, stderr, code, truncated } = await new Promise<{
+      stdout: string;
+      stderr: string;
+      code: number | null;
+      truncated: boolean;
+    }>((resolve, reject) => {
+      const child = spawn(command, {
+        shell: true,
+        cwd,
+        env: { ...process.env, ...extraEnv },
+        timeout: timeout * 1000,
+      });
+
+      let stdout = "";
+      let stderr = "";
+      let truncated = false;
+      let stdoutBytes = 0;
+      let stderrBytes = 0;
+
+      child.stdout?.on("data", (d: Buffer) => {
+        stdoutBytes += d.length;
+        if (stdoutBytes <= MAX_STREAM_BYTES) stdout += d.toString();
+        else truncated = true;
+      });
+      child.stderr?.on("data", (d: Buffer) => {
+        stderrBytes += d.length;
+        if (stderrBytes <= MAX_STREAM_BYTES) stderr += d.toString();
+        else truncated = true;
+      });
+      child.on("error", reject);
+      child.on("close", (code) =>
+        resolve({ stdout, stderr, code, truncated })
+      );
+    });
+
+    const durationMs = Date.now() - startedAt;
+    const payload = {
+      server: SERVER_NAME,
+      version: SERVER_VERSION,
+      tool: EXEC_TOOL_NAME,
+      command,
+      authorized: true,
+      exitCode: code,
+      success: code === 0,
+      durationMs,
+      truncated,
+      stdout: truncate(stdout),
+      stderr: truncate(stderr),
+    };
+
+    return {
+      content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+      isError: code !== 0,
+    };
+  } catch (error) {
+    return errorResult(
+      error instanceof Error ? error.message : String(error)
+    );
+  }
+}
+
 function createServer() {
   const server = new Server(
     {
@@ -220,11 +321,52 @@ function createServer() {
           ],
         },
       },
+      {
+        name: EXEC_TOOL_NAME,
+        description:
+          "Execute a shell command on the local machine to run pentest tools (nmap, enum4linux, searchsploit, metasploit, smbclient, gobuster, ffuf, curl, etc.) recommended by the xploit47 reasoning tool. Returns combined stdout/stderr, exit code, and duration. AUTHORIZED TESTING ONLY — you must have written permission or be on a CTF/HTB lab. Set authorized=true to confirm. Prefer running the exact command the xploit47 tool recommended.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            command: {
+              type: "string",
+              description: "Shell command to execute (runs via /bin/sh -c)",
+            },
+            authorized: {
+              type: "boolean",
+              description:
+                "Must be true. Confirms you have authorization to run this command against the target.",
+            },
+            timeout: {
+              type: "integer",
+              description: "Max execution time in seconds (default 120, max 1800)",
+              minimum: 1,
+              maximum: 1800,
+            },
+            cwd: {
+              type: "string",
+              description: "Working directory (optional)",
+            },
+            env: {
+              type: "object",
+              description: "Additional environment variables (optional)",
+              additionalProperties: { type: "string" },
+            },
+          },
+          required: ["command", "authorized"],
+        },
+      },
     ],
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    if (request.params.name !== TOOL_NAME) {
+    const toolName = request.params.name;
+
+    if (toolName === EXEC_TOOL_NAME) {
+      return handleExec(request.params.arguments);
+    }
+
+    if (toolName !== TOOL_NAME) {
       return {
         content: [
           {
